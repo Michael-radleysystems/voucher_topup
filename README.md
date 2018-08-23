@@ -6,4 +6,4 @@ To Add this etal to your etal folder just click on the clone or download button,
 Extract the folder and remove the '-master' from the end of the folder name. 
 Make sure that the .moc and Etal.xml are in the root of the folder
 
-This etal is dependent on the CheckErrorCorrect etal. Please make sure you have it in you etal folder as well
+This etal is dependent on the CheckErrorCorrect etal. Please make sure your have it in you etal folder as well
