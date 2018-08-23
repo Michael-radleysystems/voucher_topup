@@ -1,0 +1,702 @@
+// Voucher Toptup 
+// Stripped Down Reacieved account only version as nobody testing wanted to use plu's nad useing plus addeds complexity it does not need.
+
+// are we doing debug logging?
+local bDebugPrinting = false;
+
+dofile("etal\\lib\\keys.moc");
+dofile("etal\\lib\\strings.moc");
+// ***###^^^ START---------------------------------------------------------------
+dofile("etal\\lib\\dates.moc");
+// ***###^^^ END---------------------------------------------------------------
+
+enum VoucherTypes {GIFTCARD=1, DISCOUNT=2, FREEGIFT=3};   // NB. free gift is not implemented as yet, future use sortafing
+
+enum VoucherFunctions {CREATE = 1, SETACTIVE = 2, ADJUSTMENT = 3};
+local g_aPendingCancels = null;
+local g_nVoucherTopupRAKey = 0;
+local g_nVoucherModulo = 1;
+local g_nVoucherCodeKey = 0;
+local g_bLocked = false;
+local g_tLastButton = { };
+local g_nTrys = 0;
+local g_nRetryTimer = 0;
+local g_nDrawerLimit = 4; // Limit drawers
+local bEnabled = true;
+// ***###^^^ START---------------------------------------------------------------
+local g_nDrawerStart = 1;
+local g_bUseCent = true;
+local g_bCheckAmountOK = true;
+local g_bPrintCSV = true;
+local g_sCSVfile = @"vouchers\vouchers.csv";
+// ***###^^^ END---------------------------------------------------------------
+
+// Keytypes we Care About
+const KTErrorCorrect = 37;
+const KTTextMessage  = 43;
+const KTNewBalance = 7; // 4715
+const KTCheckTransfer = 92 ;
+const KTNewCheck = 93 ;
+const KTOldCheck = 94 ;
+const KTNewOldCheck = 95 ;
+const KTFloorplan = 62 ;
+const KTRefund = 33 ;
+const KTCancel = 36 ;
+const KTTowVoucher = 13;
+const KTReceivedACC = 21;
+const KTPLU = 1000;
+
+/**********************************************************************
+OnInit
+Called when the till starts, initialse user data, create keys etc.
+**********************************************************************/
+
+function OnInit()
+{
+	// enable debug printing (or not)
+    ICR_EnableDebugLog(bDebugPrinting);
+    ICR_SetLocalUserData("bDebugPrinting",bDebugPrinting);
+    
+    //debug console 
+    if(bDebugPrinting)
+    {
+        // only set these if debug printing is on, we don't want to set console to false as there's only one and it'll stop any script loaded earlier from using it.
+        ICR_SetFeature("CONSOLE",bDebugPrinting);
+        ICR_SetFeature("AUTORESTART",bDebugPrinting);
+    }    
+    ICR_SetLocalUserData("nVoucherTopupRAKey",g_nVoucherTopupRAKey,true);
+	ICR_SetLocalUserData("nVoucherModulo",g_nVoucherModulo,true);
+	ICR_SetLocalUserData("nDrawerLimit",g_nDrawerLimit,true);
+	// ***###^^^ START---------------------------------------------------------------
+	ICR_SetLocalUserData("nDrawerStart",g_nDrawerStart,true);
+	ICR_SetLocalUserData("bUseCent",g_bUseCent,true);
+	ICR_SetLocalUserData("bCheckAmountOK",g_bCheckAmountOK,true);
+	ICR_SetLocalUserData("bPrintCSV",g_bPrintCSV,true);
+	ICR_SetLocalUserData("sCSVfile",g_sCSVfile,true);	
+	// ***###^^^ END---------------------------------------------------------------
+    // pretend we just left program mode
+	AfterModeChange(10,7);
+}
+
+/**********************************************************************
+AfterModeChange
+
+**********************************************************************/
+
+function AfterModeChange(nFrom,nTo)
+{
+    if(nFrom != 10)
+    {
+        return;
+    }
+    // exited pgm3 Force a Save
+	ICR_SetLocalUserData("bDebugPrinting",bDebugPrinting);
+	
+	// Load settings we need.
+	g_nVoucherTopupRAKey = ICR_GetLocalUserData("nVoucherTopupRAKey");
+	g_nVoucherModulo = ICR_GetLocalUserData("nVoucherModulo");
+    g_nVoucherCodeKey = CheckForKey("VoucherCode",53,43,0x0100);   // text message key!
+	// ***###^^^ START---------------------------------------------------------------
+	g_nDrawerLimit = ICR_GetLocalUserData("nDrawerLimit");
+	g_nDrawerStart = ICR_GetLocalUserData("nDrawerStart");
+	g_bUseCent = ICR_GetLocalUserData("bUseCent");
+	g_bCheckAmountOK = ICR_GetLocalUserData("bCheckAmountOK");
+	g_bPrintCSV = ICR_GetLocalUserData("bPrintCSV");
+	g_sCSVfile = ICR_GetLocalUserData("sCSVfile");	
+	// ***###^^^ END---------------------------------------------------------------
+    // Stop it working if old or vouchers not enabled.
+	local tSystem = ICR_GetSystemData();
+	local tSystemConfig = ICR_GetPGMData(302,1);
+	if((tSystem.VERSIONID < 6720) || (!(tSystemConfig.CONNECT_FLAG & 0x1000 )))
+	{
+		// Force output so they know why did not work.
+		print("Vouchers disabled");
+		print("VID"+tSystem.VERSIONID+" FLAG"+(tSystemConfig.CONNECT_FLAG & 0x1000 ));
+		bEnabled = false; //TODO: Work out the correct flag for Voucher Enabled. 
+	}
+	else
+	{
+		bEnabled = true;
+		if(bDebugPrinting)print("Vouchers avilable");
+	}
+}
+
+
+function BeforeKeyPress(nFile,nRecord,nKeytype)
+{
+	// if we are locking the till to stop them poking the buttons whilst we are busy making the shiny things
+    if(g_bLocked)
+    {
+		if(bDebugPrinting)print("POS LOCKED");
+		ICR_SetInput(ICR_GetLanguageText(138)) // 138=Please Wait.
+		// then dont let them press it
+        return false;
+    }
+	
+	if(!bEnabled)
+	{
+		if(bDebugPrinting)print("topup script disabled.");
+		return true;
+	}
+	// Are Use using the till. 
+	local tSystem = ICR_GetSystemData();
+	if(tSystem.CURRENTCLERK == 0)return true; // Let till no clerk error.
+	local tSaleHeader = ICR_GetClerkBuffer_Index();	
+	switch(nKeytype)
+	{
+	case KTReceivedACC: // ACC
+		if(nRecord != g_nVoucherTopupRAKey)
+		{
+			// Push normal non voucher RA. carry on. 
+			return true;
+		}
+		if(tSaleHeader.CHECK)
+		{	
+			ICR_MessageBox("Can not sell a voucher on a table", "", "ICRTouch", 0);
+			return false;
+		}		
+		
+		if(tSaleHeader.ITEMCOUNT > 0)
+		{
+			ICR_MessageBox("Can not sell a voucher with other items", "", "ICRTouch", 0);
+			return false;
+		}
+		
+		if(ICR_GetGlobalUserData("ECFLAG"))
+		{
+			ICR_MessageBox("You must finalise the sale first", "", "ICRTouch", 0);
+			return false;
+		}
+		// Its a Voucher Topup from RA
+		TopupVoucherFromRAcc(nRecord);
+		return false; // Key is puhed by toptup result 
+		break;
+	default:
+		if(bDebugPrinting)print("Ignoring KT"+nKeytype);
+	}
+    return true;
+}
+
+
+function TopupVoucherFromRAcc(nRecord)
+{
+	// No RCPT No Voucher.
+	//local bPrinterReady = ReceiptPrinterCheck();
+	//if(!bPrinterReady)return;
+	
+	local tThisKey = ICR_GetPGMData(52,nRecord);
+	local tSystem = ICR_GetSystemData();
+	// Pushed Voucher Received Account key
+	local szVoucherCode = "";	
+	szVoucherCode = DialogVoucherCode();
+	if(szVoucherCode == "")return; 
+	szVoucherCode = szVoucherCode.toupper();
+	g_tLastButton = {};
+	local nPrice = 0
+	
+	// ***###^^^ START---------------------------------------------------------------
+	if(g_bCheckAmountOK)
+	{
+		// used to check if it is the right amount befor finalize
+		nPrice = DialogAmountOk( tThisKey.NAME , 6 );
+	}
+	else
+	{
+		//No check on price inputted
+		nPrice = DialogVoucherValue( tThisKey.NAME , 6 );
+		if(!g_bUseCent)
+		{
+			nPrice = nPrice*100;
+		}
+	}	
+	// ***###^^^ END---------------------------------------------------------------
+	
+	if(bDebugPrinting)print("Input Price: "+nPrice);
+	
+	
+	// if Still Zero then they dont have halo or didnt type a price.
+	if(nPrice == 0)
+	{
+		// You cannnot sell a zero voucher
+		if(bDebugPrinting)print("Voucher value was Zero");
+		return false;
+	}
+	
+	local nMethod = DialogRAMethod();
+	if(nMethod == 0)
+	{
+		// You cannnot sell a zero voucher
+		if(bDebugPrinting)print("Voucher Method was Zero");
+		return false;
+	}
+	g_tLastButton.INPUT  <- nPrice;
+	// ***###^^^ START---------------------------------------------------------------
+	if(tSystem.MODE ==1 || tSystem.MODE == 6) nPrice = 0 - nPrice;
+	// Old line: if(tSystem.MODE ==1) nPrice = 0 - nPrice;
+	// ***###^^^ END---------------------------------------------------------------
+	LockTill(true,ICR_GetLanguageText(4977)) // 4977 = Voucher
+	// Create a Voucher RA.
+	local tSaleHeader = ICR_GetClerkBuffer_Index();
+	g_tLastButton.CODE <- szVoucherCode;
+	g_tLastButton.VALUE <- nPrice;
+	g_tLastButton.ID <- tSaleHeader.UNIQUESALEID
+	g_tLastButton.FILE   <- 52;
+	g_tLastButton.RECORD <- nRecord;
+	g_tLastButton.METHOD <- nMethod;
+	if(bDebugPrinting)printtable(g_tLastButton);
+	ICR_Voucher_Used(szVoucherCode ,nPrice,tSaleHeader.UNIQUESALEID);
+	ICR_JournalLine(szVoucherCode, 0, 1, 53, g_nVoucherCodeKey, 0);
+	// ***###^^^ START---------------------------------------------------------------
+	if(g_bPrintCSV)
+	{
+		local tClerk = ICR_GetPGMData(5,tSaleHeader.CLERK);
+		local myfile = file(g_sCSVfile,"a");
+		local sName = tClerk.NAME;
+		local sOutput = DateToString(date());		
+		sOutput += " "+GetTimeStamp(date());	
+		sOutput += ", "+szVoucherCode+", "+(nPrice.tofloat()/100)*-1+", "+tClerk.NAME+"\n";
+		WriteLine(sOutput,myfile);	
+		myfile.flush();
+		myfile.close();
+	}
+// ***###^^^ END---------------------------------------------------------------	
+	return;
+}
+
+
+function DialogVoucherCode(szTitle = null)
+{
+	if(szTitle == null)szTitle = "ENTER VOUCHER CODE";//ICR_GetLanguageText(4977);
+	local strVoucherCode = ICR_GetAlphaDialog(szTitle);
+	if(bDebugPrinting)print("input:"+strVoucherCode);
+	// check for magcards. there would be start and end sentinels
+	if(strVoucherCode[0] == '%' && strVoucherCode[strVoucherCode.len() -1] == '?')
+	{
+		if(bDebugPrinting)print("clean t1 sentinals")
+		strVoucherCode = strVoucherCode.slice(1,-1);// track1 sentinals
+	}
+		if(strVoucherCode[0] == ';' && strVoucherCode[strVoucherCode.len() -1] == '?')
+	{
+		if(bDebugPrinting)print("clean t2 sentinals")
+		strVoucherCode = strVoucherCode.slice(1,-1);// track2 sentinals
+	}
+	
+	// and a header
+	if(strVoucherCode.len() > 3)
+	{
+		if( strVoucherCode.slice(0,3) == "VCF")
+		{
+			strVoucherCode = strVoucherCode.slice(3);
+			// and there could be a * on the end of it if it's come from a barcode
+			if (strVoucherCode[strVoucherCode.len() -1] == '*')
+			{
+				strVoucherCode = strVoucherCode.slice(0,-1);
+			}
+		}
+	}
+	if(bDebugPrinting)print("Code "+strVoucherCode);
+	return strVoucherCode;
+}
+
+
+function DialogVoucherValue(szTitle = null , nHalo = 0)
+{
+	if(bDebugPrinting)print("DialogVoucherValue "+szTitle+ " HALO "+nHalo);
+	local szInput = ICR_GetInput();
+	local nPrice = 0;
+	if(szInput == "")szInput = ICR_GetNumberDialog(szTitle,0,false,3);
+	local nPrice = 0
+	if(szInput != "")nPrice = szInput.tointeger();
+	
+	// if Still Zero then they dont have halo or didnt type a price.
+	if(nPrice == 0)
+	{
+		ICR_Error(12); // You cannnot sell a zero voucher. 12=Err Zero Price
+		return 0;
+	}
+	
+	if(nPrice.tostring().len() > nHalo)
+	{
+		ICR_Error(44); // Value to big
+		return 0;
+	}
+	
+	// Valid Vouchers must usually be multiples of something. eg pounds
+	
+	if(nPrice % g_nVoucherModulo != 0)
+	{
+		if(bDebugPrinting)print("g_nVoucherModulo"+g_nVoucherModulo+ " makes "+(nPrice % g_nVoucherModulo));
+		ICR_Sound(1); // ERR SOUND
+		ICR_SetInput_Message(ICR_GetLanguageText(281)); // 281=INVALID ENTRY
+		return 0;
+	}
+	return nPrice;
+}
+
+
+function DialogRAMethod()
+{
+	// Create list of Drawers 4 = dw1 11 = dr8
+	local bFirst = true;
+	// Check for stupid settings.
+	// ***###^^^ START---------------------------------------------------------------
+	if(g_nDrawerStart < 1)g_nDrawerStart = 1; //if(g_nDrawerLimit < 1)g_nDrawerLimit = 1;
+	if(g_nDrawerStart > 8)g_nDrawerStart = 8;
+	if(g_nDrawerStart > g_nDrawerLimit) g_nDrawerLimit = g_nDrawerStart;
+	// ***###^^^ END---------------------------------------------------------------
+	if(g_nDrawerLimit > 8)g_nDrawerLimit = 8;
+	// ***###^^^ START---------------------------------------------------------------
+	for(local nCount = (3+g_nDrawerStart) ; nCount <= (3+g_nDrawerLimit) ; nCount++ ) 
+	//Old Line : for(local nCount = 4 ; nCount <= (3+g_nDrawerLimit) ; nCount++ )
+	// ***###^^^ END---------------------------------------------------------------
+	{
+		local tThisFixedTotal = ICR_GetPGMData(50,nCount);
+		ICR_ListDialog_AddItem(tThisFixedTotal.NAME , bFirst);
+		bFirst = false;
+	}
+	local nResult = ICR_ListDialog(ICR_GetLanguageText(337));   //337=Please Choose Media
+	return nResult;
+}
+
+function AfterKeyPress(nFile,nRecord,nKeytype)
+{
+	
+}
+
+
+/************************************************************************
+OnVoucherResult
+
+TouchPoint will call this to tell us what happened to our ICR_Voucher call
+all ICR_Voucher functions use this event handler for the result
+************************************************************************/
+function OnVoucherResult(bResult, szVoucherCode,lastVoucherFunc)
+{
+    
+	switch(lastVoucherFunc)
+    {
+        case VoucherFunctions.SETACTIVE:
+			if(bDebugPrinting)print("OnVoucherResult SETACTIVE "+bResult+" CODE"+szVoucherCode);
+			OnSetActiveResult(bResult, szVoucherCode) 
+			break;
+		
+		case VoucherFunctions.ADJUSTMENT:
+			if(bDebugPrinting)print("OnVoucherResult ADJUSTMENT "+bResult+" CODE"+szVoucherCode);
+            OnAdjustResult(bResult, szVoucherCode);
+            break;
+        default:
+            print("unknown voucher op");
+            print(bResult);
+            print(lastVoucherFunc);
+            LockTill(false);
+            break;
+    };
+}
+
+function OnSetActiveResult(bResult, szVoucherCode) 
+{    
+    // all done!
+    LockTill(false);
+}
+
+
+function OnAdjustResult(bResult, szVoucherCode)
+{
+    if(bResult == false)
+    {
+        if(bDebugPrinting)print("AdjustResult result is false. Try"+g_nTrys);
+		if(g_nTrys >= 3)
+		{
+			// Failed to work after multiple attempts.
+			ICR_Sound(1);
+			LockTill(false);
+			// the result cannot tell the difference between failed due to connect and failed for a reason such as bad code.
+			ICR_SetInput_Message(ICR_GetLanguageText(5964) ); //5964 Failed.
+        }
+		else 
+		{
+			g_nTrys++; // Count Fail.
+			// Did not work. maybe the internet broke. try again in 200ms.
+			g_nRetryTimer = ICR_StartTimer(200);
+			// Timer will call ICR_Voucher_Used(g_tLastButton.CODE,g_tLastButton.AMOUNT,nSaleID);
+		}
+    }
+    else
+    {
+		 // Voucher topup success. Carry on press the key
+		 ICR_SetInput(abs(g_tLastButton.INPUT));
+		 ICR_SetNextDialogInput(g_tLastButton.METHOD);
+		 ICR_KeyPress(g_tLastButton.FILE,g_tLastButton.RECORD);
+		 ICR_Voucher_SetActive(szVoucherCode, true);
+		 LockTill(false);
+    }
+    return;
+}
+
+/*******************************************************************************
+* Called when a Timer expires
+*********************************************************************************/
+
+function OnTimer(nTimerID, nSystemTime)
+{
+	if(nTimerID == g_nRetryTimer)
+	{
+		ICR_StopTimer(nTimerID); // one off timer.
+		if(bDebugPrinting)print("Retry "+g_nTrys);
+		// Retry failed voucher
+		ICR_Voucher_Used(g_tLastButton.CODE,g_tLastButton.VALUE,g_tLastButton.ID);
+	}
+}
+
+/************************************************************************
+LockTill
+record ether we're locking the till or not and steal or release all the 
+before events so we can stop all user interaction with the till while
+we wait for data to come back
+************************************************************************/
+
+function LockTill(bLock, strDisplayMessage = "")
+{
+    if (bLock)
+    {   
+        // if we had a message to display do that
+        if (strDisplayMessage != "")
+        {
+            ICR_SetInput_Message(strDisplayMessage);
+        }    
+        // write down that we're not letting them do stuff, we can use this to prevent keypresses etc
+        g_bLocked = true;
+        // stop other scripts doing stuff while we're sorting this out
+        ICR_StealEvent("BeforeKeyPress");
+        ICR_StealEvent("OnIButtonPressed");
+        ICR_StealEvent("OnCardSwipe");
+        ICR_StealEvent("OnBarcode");
+    }
+    else
+    {
+        // if we had a message to display do that
+        if (strDisplayMessage != "")
+        {
+            ICR_SetInput_Message(strDisplayMessage);
+        } 
+        g_bLocked = false;
+        // allow other scripts to do stuff again
+        ICR_ReleaseEvent("BeforeKeyPress");
+        ICR_ReleaseEvent("OnIButtonPressed");
+        ICR_ReleaseEvent("OnCardSwipe");
+        ICR_ReleaseEvent("OnBarcode");
+    }
+}
+
+
+function OnBarcode(szBarcode)
+{
+    return !g_bLocked;
+}
+
+function OnCardSwipe(nTrack,szData)
+{
+    return !g_bLocked;
+}
+
+function OnIButtonPressed(szIbutton)
+{
+    return !g_bLocked;
+}
+
+
+
+function OnEnterPGMMenu(nSub)
+{
+    local nID=0;
+    ICR_PurgeProgramSettings();
+    switch(nSub)
+    {
+        case 0:
+            //nID = ICR_AdvertiseProgramSetting("Voucher Topup Dept","nVoucherTopupDept");
+            //ICR_ProgramItem_SetOptionList(nID,55);
+			nID = ICR_AdvertiseProgramSetting("Voucher Topup by Received Key","nVoucherTopupRAKey");
+            ICR_ProgramItem_SetOptionList(nID,5221);
+			ICR_AdvertiseProgramSetting("Values must be Multiple of ","nVoucherModulo");
+			// ***###^^^ START---------------------------------------------------------------
+			ICR_AdvertiseProgramSetting("Start Drawer to Show 1~8","nDrawerStart");
+			ICR_AdvertiseProgramSetting("End Drawer to Show 1~8","nDrawerLimit");
+			ICR_AdvertiseProgramSetting("Use Cents in Voucher Top Up ?","bUseCent");
+			ICR_AdvertiseProgramSetting("Check the amount after it was entered ?","bCheckAmountOK");
+			ICR_AdvertiseProgramSetting("Output a csv ?","bPrintCSV");
+			ICR_AdvertiseProgramSetting("Path and extention for csv ?","sCSVfile");
+			// ***###^^^ END---------------------------------------------------------------
+            ICR_AdvertiseProgramSetting("Version Info", "SCRIPTVERINF");
+            break;
+
+        default:
+            // in case we get somewhere we shouldn't
+            ICR_AdvertiseProgramHeading("This menu doesn't exist :(");
+            break;
+    }
+}
+
+
+function OnEnterPGMOptionList(nID)
+{  
+    // Dump the current option list if there is one
+    ICR_PurgeProgramOptionList();
+    switch(nID)
+    {
+		case 55: // depts
+            local nMAX = ICR_GetFileSize(nID);
+			ICR_ProgramOptionList_Add("NOT USED",0);
+            for (local nCount = 1; nCount <= nMAX; nCount++)
+            {
+                local tThisPGM = ICR_GetPGMData(nID,nCount);
+                ICR_ProgramOptionList_Add(tThisPGM.NAME,nCount);
+            }
+		case 5221: // Transaction Key ~ Received Acc keys only.
+            local nMAX = ICR_GetFileSize(52);
+			ICR_ProgramOptionList_Add("NOT USED",0);
+            for (local nCount = 1; nCount <= nMAX; nCount++)
+            {
+                local tThisPGM = ICR_GetPGMData(52,nCount);
+				if(tThisPGM.KEYTYPE == 21)ICR_ProgramOptionList_Add(tThisPGM.NAME,nCount);
+            }
+            break;
+		default:
+			
+            break;
+    }
+}
+
+function printtable(tData)
+{
+    local sztable = "";
+    if (tData == null)
+    {
+        print ("Null table");
+        return;
+    }
+    if (!((typeof tData == "table") || (typeof tData == "array")))
+    {
+        print ("ERR not a table or array "+tData);
+        return;
+    }
+    foreach(idx,val in tData)
+    {
+        if ((typeof val == "table") || (typeof val == "array"))
+        {
+            printtable(val);
+        }
+        else
+        {
+            sztable += (idx +":"+ val +" | ");
+        }
+    }
+    sztable += "\n";
+    print (sztable);
+}
+
+
+
+/**************************************************************************
+BeforePrint multiple events for each line out to printer.
+*************************************************************************/
+
+function BeforePrint(nType, nFile, nRecord, nMC, nPort)
+{
+	// Added Voucher to RA Voucher Receipt
+	if((nFile == 52) && (nRecord == g_nVoucherTopupRAKey))
+	{
+		// Fix out to zero crash.
+		if(nMC == 0)
+		{
+			//Zero = my device. Set Terminal ID number
+			local tSysConfig = ICR_GetPGMData(302,1);
+			nMC = tSysConfig.TERMINALID;
+		}	
+		ICR_OutputLine( "   "+ ICR_GetLanguageText(4977) + ":" + g_tLastButton.CODE + "\n", nMC, nPort);
+	}
+}
+
+
+/**************************************************************************
+ReceiptPrinterCheck returns true if Printer is Ready.
+*************************************************************************/
+
+function ReceiptPrinterCheck()
+{
+    local tDvcConnex = ICR_GetPGMData(304,1);
+    local nMC = tDvcConnex.DEVICE1MC;
+    local nPort = tDvcConnex.DEVICE1PORT;
+    
+    // is there a printer configured on that port?
+    if(nPort == 10)
+    {
+        if(bDebugPrinting)print("No printer configured");
+        ICR_Error(22);
+        return;
+    }
+    
+    if(nMC == 0)
+    {
+        //Zero = my device. Use Terminal ID number
+        local tSysConfig = ICR_GetPGMData(302,1);
+        nMC = tSysConfig.TERMINALID;
+    }
+    
+    // see if the printer is there and dont print anything until it is
+    local bIsPrinterThere = ICR_DeviceStatus(nMC,nPort);
+    local nRetry = 1;
+    while (!bIsPrinterThere)
+    {
+        nRetry = ICR_MessageBox(ICR_GetLanguageText(4125) ,"","",1); //4125=PLEASE CHECK RECEIPT PRINTER, RETRY
+        if(!nRetry)break; // N They gave up cancel.
+        // Y Try again.
+        bIsPrinterThere = ICR_DeviceStatus(nMC,nPort);
+    }
+    return bIsPrinterThere;
+}
+// ***###^^^ START---------------------------------------------------------------
+// function for writing a string to a file
+function WriteLine(szLine,fileOut)
+{
+    for(local nCount = 0; nCount < szLine.len(); nCount++)
+    {
+		fileOut.writen(szLine[nCount], 'c');
+    }
+}
+
+//function for getting the time from a time stamp
+function GetTimeStamp(tNow)
+{
+	local sTimeStamp = "" + (tNow.hour < 10 ? "0"+tNow.hour : tNow.hour)+":"+(tNow.min < 10 ? "0"+tNow.min : tNow.min)+":"+(tNow.sec < 10 ? "0"+tNow.sec : tNow.sec);
+	return sTimeStamp
+}
+
+
+
+//prompt is entered amount ok
+function DialogAmountOk(szTitle = null , nHalo = 0)
+{
+	local nPrice = DialogVoucherValue(szTitle,nHalo);
+	
+	//multiply the value given by 100 because we never sell by cents/pennies	 
+	if(!g_bUseCent)
+	{
+		nPrice = nPrice*100;
+	}		
+	
+	local tCurrency = ICR_GetPGMData(44,6);
+	local szCurrency = tCurrency.TEXT.slice(0,4);
+	
+	local bResult = ICR_MessageBox("Is this the correct amount? €"+nPrice.tofloat()/100,"","Voucher Check",1);
+	
+	if(bResult)
+	{
+		return nPrice;
+	}
+	else
+	{
+		nPrice = DialogAmountOk(szTitle,nHalo);
+		return nPrice;
+	}	
+}
+// ***###^^^ END---------------------------------------------------------------

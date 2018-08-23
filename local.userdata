@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<USERDATA>
+  <ITEM>
+    <NAME>bDebugPrinting</NAME>
+    <KIND>BOOLEAN</KIND>
+    <VALUE>FALSE</VALUE>
+  </ITEM>
+  <ITEM>
+    <NAME>nVoucherTopupRAKey</NAME>
+    <KIND>INTEGER</KIND>
+    <VALUE>15</VALUE>
+  </ITEM>
+  <ITEM>
+    <NAME>nVoucherModulo</NAME>
+    <KIND>INTEGER</KIND>
+    <VALUE>1</VALUE>
+  </ITEM>
+  <ITEM>
+    <NAME>nDrawerLimit</NAME>
+    <KIND>INTEGER</KIND>
+    <VALUE>4</VALUE>
+  </ITEM>
+  <ITEM>
+    <NAME>VoucherCode</NAME>
+    <KIND>INTEGER</KIND>
+    <VALUE>197</VALUE>
+  </ITEM>
+</USERDATA>
