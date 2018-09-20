@@ -3,12 +3,10 @@
 
 // are we doing debug logging?
 local bDebugPrinting = false;
+local szScriptVersion = "v1.15";
 
 dofile("etal\\lib\\keys.moc");
 dofile("etal\\lib\\strings.moc");
-// ***###^^^ START---------------------------------------------------------------
-dofile("etal\\lib\\dates.moc");
-// ***###^^^ END---------------------------------------------------------------
 
 enum VoucherTypes {GIFTCARD=1, DISCOUNT=2, FREEGIFT=3};   // NB. free gift is not implemented as yet, future use sortafing
 
@@ -22,14 +20,14 @@ local g_tLastButton = { };
 local g_nTrys = 0;
 local g_nRetryTimer = 0;
 local g_nDrawerLimit = 4; // Limit drawers
+local g_LASTFIN = {};
 local bEnabled = true;
-// ***###^^^ START---------------------------------------------------------------
+
 local g_nDrawerStart = 1;
-local g_bUseCent = true;
-local g_bCheckAmountOK = true;
+local g_bUseCent = false;
+local g_bCheckAmountOK = false;
 local g_bPrintCSV = true;
 local g_sCSVfile = @"vouchers\vouchers.csv";
-// ***###^^^ END---------------------------------------------------------------
 
 // Keytypes we Care About
 const KTErrorCorrect = 37;
@@ -46,6 +44,10 @@ const KTTowVoucher = 13;
 const KTReceivedACC = 21;
 const KTPLU = 1000;
 
+const IDC_VOUCHER_FLAG = 0x1000;
+
+local tLanguage = {};
+
 /**********************************************************************
 OnInit
 Called when the till starts, initialse user data, create keys etc.
@@ -53,7 +55,7 @@ Called when the till starts, initialse user data, create keys etc.
 
 function OnInit()
 {
-	// enable debug printing (or not)
+    // enable debug printing (or not)
     ICR_EnableDebugLog(bDebugPrinting);
     ICR_SetLocalUserData("bDebugPrinting",bDebugPrinting);
     
@@ -67,14 +69,19 @@ function OnInit()
     ICR_SetLocalUserData("nVoucherTopupRAKey",g_nVoucherTopupRAKey,true);
 	ICR_SetLocalUserData("nVoucherModulo",g_nVoucherModulo,true);
 	ICR_SetLocalUserData("nDrawerLimit",g_nDrawerLimit,true);
-	// ***###^^^ START---------------------------------------------------------------
+	
 	ICR_SetLocalUserData("nDrawerStart",g_nDrawerStart,true);
 	ICR_SetLocalUserData("bUseCent",g_bUseCent,true);
 	ICR_SetLocalUserData("bCheckAmountOK",g_bCheckAmountOK,true);
 	ICR_SetLocalUserData("bPrintCSV",g_bPrintCSV,true);
 	ICR_SetLocalUserData("sCSVfile",g_sCSVfile,true);	
-	// ***###^^^ END---------------------------------------------------------------
-    // pretend we just left program mode
+   
+   	local szScriptLocation = ICR_GetSystemData().SCRIPTLOCATION;
+	dofile(szScriptLocation + "\\EtalLanguage.moc");
+		
+	tLanguage = ReturnLanguageFile();
+	
+	// pretend we just left program mode
 	AfterModeChange(10,7);
 }
 
@@ -96,28 +103,36 @@ function AfterModeChange(nFrom,nTo)
 	g_nVoucherTopupRAKey = ICR_GetLocalUserData("nVoucherTopupRAKey");
 	g_nVoucherModulo = ICR_GetLocalUserData("nVoucherModulo");
     g_nVoucherCodeKey = CheckForKey("VoucherCode",53,43,0x0100);   // text message key!
-	// ***###^^^ START---------------------------------------------------------------
 	g_nDrawerLimit = ICR_GetLocalUserData("nDrawerLimit");
+	
 	g_nDrawerStart = ICR_GetLocalUserData("nDrawerStart");
 	g_bUseCent = ICR_GetLocalUserData("bUseCent");
 	g_bCheckAmountOK = ICR_GetLocalUserData("bCheckAmountOK");
 	g_bPrintCSV = ICR_GetLocalUserData("bPrintCSV");
 	g_sCSVfile = ICR_GetLocalUserData("sCSVfile");	
-	// ***###^^^ END---------------------------------------------------------------
+	
     // Stop it working if old or vouchers not enabled.
-	local tSystem = ICR_GetSystemData();
+	local tSystemData = ICR_GetSystemData();
 	local tSystemConfig = ICR_GetPGMData(302,1);
-	if((tSystem.VERSIONID < 6720) || (!(tSystemConfig.CONNECT_FLAG & 0x1000 )))
+	
+	if(tSystemData.VERSIONID < 6800)
 	{
-		// Force output so they know why did not work.
-		print("Vouchers disabled");
-		print("VID"+tSystem.VERSIONID+" FLAG"+(tSystemConfig.CONNECT_FLAG & 0x1000 ));
-		bEnabled = false; //TODO: Work out the correct flag for Voucher Enabled. 
+		print("Vouchers Disabled");
+        print("Current Version ID: "+tSystemData.VERSIONID+" Required Version ID: 6800+");
+		if(tSystemData.VERSIONID >= 6700)print("You're currently running a BETA version of 2017");
+		print("Please Update Your Software");
+        bEnabled = false;
 	}
-	else
+	else if(tSystemData.VERSIONID >= 6800 && (tSystemConfig.CONNECT_FLAG & IDC_VOUCHER_FLAG ))
+    {
+        print("Vouchers Enabled");
+        bEnabled = true;
+    }
+    else if(tSystemData.VERSIONID >= 6800 && !(tSystemConfig.CONNECT_FLAG & IDC_VOUCHER_FLAG))
 	{
-		bEnabled = true;
-		if(bDebugPrinting)print("Vouchers avilable");
+		print("Vouchers Disabled");
+		print("Voucher Flag Disabled | PGM3 - System Prog - System Config");
+		bEnabled = false;
 	}
 }
 
@@ -141,38 +156,46 @@ function BeforeKeyPress(nFile,nRecord,nKeytype)
 	// Are Use using the till. 
 	local tSystem = ICR_GetSystemData();
 	if(tSystem.CURRENTCLERK == 0)return true; // Let till no clerk error.
-	local tSaleHeader = ICR_GetClerkBuffer_Index();	
+	local tSaleHeader = ICR_GetClerkBuffer_Index();
 	switch(nKeytype)
 	{
-	case KTReceivedACC: // ACC
-		if(nRecord != g_nVoucherTopupRAKey)
-		{
-			// Push normal non voucher RA. carry on. 
-			return true;
-		}
-		if(tSaleHeader.CHECK)
-		{	
-			ICR_MessageBox("Can not sell a voucher on a table", "", "ICRTouch", 0);
-			return false;
-		}		
-		
-		if(tSaleHeader.ITEMCOUNT > 0)
-		{
-			ICR_MessageBox("Can not sell a voucher with other items", "", "ICRTouch", 0);
-			return false;
-		}
-		
-		if(ICR_GetGlobalUserData("ECFLAG"))
-		{
-			ICR_MessageBox("You must finalise the sale first", "", "ICRTouch", 0);
-			return false;
-		}
-		// Its a Voucher Topup from RA
-		TopupVoucherFromRAcc(nRecord);
-		return false; // Key is puhed by toptup result 
-		break;
-	default:
-		if(bDebugPrinting)print("Ignoring KT"+nKeytype);
+		case KTReceivedACC: // ACC
+			if(nRecord != g_nVoucherTopupRAKey)
+			{
+				// Push normal non voucher RA. carry on. 
+				return true;
+			}
+			
+			if(tSaleHeader.CHECK)
+			{	
+				ICR_MessageBox("Can not sell a voucher on a table", "", "ICRTouch", 0);
+				return false;
+			}		
+			
+			if(tSaleHeader.ITEMCOUNT > 0)
+			{
+				ICR_MessageBox("Can not sell a voucher with other items", "", "ICRTouch", 0);
+				return false;
+			}
+
+			if(ICR_GetGlobalUserData("ECFLAG"))
+			{
+				ICR_MessageBox("You must finalise the sale first", "", "ICRTouch", 0);
+				return false;
+			}
+			
+			// Check if buffer is clear for RA Button
+			if((tSaleHeader.CONSECUTIVENUMBER == 0) || (tSaleHeader.REGPOS == 0))
+			{
+				// Its a Voucher Topup from RA
+				TopupVoucherFromRAcc(nRecord);
+				return false; // Key is puhed by toptup result 
+			}			
+			break;
+			
+		default:
+			if(bDebugPrinting)print("Ignoring KT"+nKeytype);
+			break;
 	}
     return true;
 }
@@ -192,12 +215,12 @@ function TopupVoucherFromRAcc(nRecord)
 	if(szVoucherCode == "")return; 
 	szVoucherCode = szVoucherCode.toupper();
 	g_tLastButton = {};
-	local nPrice = 0
 	
-	// ***###^^^ START---------------------------------------------------------------
+	local nPrice = 0;
+	
 	if(g_bCheckAmountOK)
 	{
-		// used to check if it is the right amount befor finalize
+		// used to check if it is the right amount before finalize
 		nPrice = DialogAmountOk( tThisKey.NAME , 6 );
 	}
 	else
@@ -209,10 +232,6 @@ function TopupVoucherFromRAcc(nRecord)
 			nPrice = nPrice*100;
 		}
 	}	
-	// ***###^^^ END---------------------------------------------------------------
-	
-	if(bDebugPrinting)print("Input Price: "+nPrice);
-	
 	
 	// if Still Zero then they dont have halo or didnt type a price.
 	if(nPrice == 0)
@@ -229,45 +248,36 @@ function TopupVoucherFromRAcc(nRecord)
 		if(bDebugPrinting)print("Voucher Method was Zero");
 		return false;
 	}
+	// Guess next id. 
 	g_tLastButton.INPUT  <- nPrice;
-	// ***###^^^ START---------------------------------------------------------------
 	if(tSystem.MODE ==1 || tSystem.MODE == 6) nPrice = 0 - nPrice;
-	// Old line: if(tSystem.MODE ==1) nPrice = 0 - nPrice;
-	// ***###^^^ END---------------------------------------------------------------
 	LockTill(true,ICR_GetLanguageText(4977)) // 4977 = Voucher
 	// Create a Voucher RA.
 	local tSaleHeader = ICR_GetClerkBuffer_Index();
 	g_tLastButton.CODE <- szVoucherCode;
 	g_tLastButton.VALUE <- nPrice;
-	g_tLastButton.ID <- tSaleHeader.UNIQUESALEID
+	//g_tLastButton.LASTCONSEC <- g_tLastButton.UNIQUESALEID ;
+	g_tLastButton.ID <- tSaleHeader.UNIQUESALEID;
 	g_tLastButton.FILE   <- 52;
 	g_tLastButton.RECORD <- nRecord;
 	g_tLastButton.METHOD <- nMethod;
+	if(bDebugPrinting)print("--last sale--");
+	if(bDebugPrinting)printtable(g_LASTFIN);
+	if(bDebugPrinting)print("--This voucher--");
 	if(bDebugPrinting)printtable(g_tLastButton);
-	ICR_Voucher_Used(szVoucherCode ,nPrice,tSaleHeader.UNIQUESALEID);
+	// RA occures before sale starts to theres no sale id. use last + 1
+	if(g_tLastButton.ID == 0)g_tLastButton.ID <- ICR_GetGlobalUserData("ID");
+	ICR_Voucher_Used(szVoucherCode ,nPrice,g_tLastButton.ID);
 	ICR_JournalLine(szVoucherCode, 0, 1, 53, g_nVoucherCodeKey, 0);
-	// ***###^^^ START---------------------------------------------------------------
-	if(g_bPrintCSV)
-	{
-		local tClerk = ICR_GetPGMData(5,tSaleHeader.CLERK);
-		local myfile = file(g_sCSVfile,"a");
-		local sName = tClerk.NAME;
-		local sOutput = DateToString(date());		
-		sOutput += " "+GetTimeStamp(date());	
-		sOutput += ", "+szVoucherCode+", "+(nPrice.tofloat()/100)*-1+", "+tClerk.NAME+"\n";
-		WriteLine(sOutput,myfile);	
-		myfile.flush();
-		myfile.close();
-	}
-// ***###^^^ END---------------------------------------------------------------	
 	return;
 }
 
 
 function DialogVoucherCode(szTitle = null)
 {
-	if(szTitle == null)szTitle = "ENTER VOUCHER CODE";//ICR_GetLanguageText(4977);
+	if(szTitle == null)szTitle = tLanguage[5];//ICR_GetLanguageText(4977);
 	local strVoucherCode = ICR_GetAlphaDialog(szTitle);
+	if(strVoucherCode == "") return strVoucherCode;
 	if(bDebugPrinting)print("input:"+strVoucherCode);
 	// check for magcards. there would be start and end sentinels
 	if(strVoucherCode[0] == '%' && strVoucherCode[strVoucherCode.len() -1] == '?')
@@ -400,6 +410,16 @@ function OnSetActiveResult(bResult, szVoucherCode)
 }
 
 
+function AfterFinalise()
+{
+    
+	g_LASTFIN = ICR_GetClerkBuffer_Index();
+	ICR_SetGlobalUserData("ID", (g_LASTFIN.UNIQUESALEID + 1));
+	if(bDebugPrinting)print("UpdateLast Fin "+g_LASTFIN.UNIQUESALEID);
+}
+
+
+
 function OnAdjustResult(bResult, szVoucherCode)
 {
     if(bResult == false)
@@ -504,8 +524,6 @@ function OnIButtonPressed(szIbutton)
     return !g_bLocked;
 }
 
-
-
 function OnEnterPGMMenu(nSub)
 {
     local nID=0;
@@ -513,11 +531,13 @@ function OnEnterPGMMenu(nSub)
     switch(nSub)
     {
         case 0:
+			ICR_AdvertiseProgramHeading(tLanguage[0] + " | " + szScriptVersion);
             //nID = ICR_AdvertiseProgramSetting("Voucher Topup Dept","nVoucherTopupDept");
             //ICR_ProgramItem_SetOptionList(nID,55);
-			nID = ICR_AdvertiseProgramSetting("Voucher Topup by Received Key","nVoucherTopupRAKey");
+			nID = ICR_AdvertiseProgramSetting(tLanguage[1] ,"nVoucherTopupRAKey");
             ICR_ProgramItem_SetOptionList(nID,5221);
-			ICR_AdvertiseProgramSetting("Values must be Multiple of ","nVoucherModulo");
+			ICR_AdvertiseProgramSetting(tLanguage[2] ,"nVoucherModulo");
+			
 			// ***###^^^ START---------------------------------------------------------------
 			ICR_AdvertiseProgramSetting("Start Drawer to Show 1~8","nDrawerStart");
 			ICR_AdvertiseProgramSetting("End Drawer to Show 1~8","nDrawerLimit");
@@ -526,7 +546,8 @@ function OnEnterPGMMenu(nSub)
 			ICR_AdvertiseProgramSetting("Output a csv ?","bPrintCSV");
 			ICR_AdvertiseProgramSetting("Path and extention for csv ?","sCSVfile");
 			// ***###^^^ END---------------------------------------------------------------
-            ICR_AdvertiseProgramSetting("Version Info", "SCRIPTVERINF");
+			
+            ICR_AdvertiseProgramSetting(tLanguage[4], "SCRIPTVERINF");
             break;
 
         default:
@@ -654,8 +675,28 @@ function ReceiptPrinterCheck()
     }
     return bIsPrinterThere;
 }
-// ***###^^^ START---------------------------------------------------------------
-// function for writing a string to a file
+
+
+/**************************************************************************
+Print voucher top Up CSV
+*************************************************************************/
+
+function printVoucherCSV(szPrintVoucherCode)
+{
+	local tClerk = ICR_GetPGMData(5,tSaleHeader.CLERK);
+		local myfile = file(g_sCSVfile,"a");
+		local sName = tClerk.NAME;
+		local sOutput = DateToString(date());		
+		sOutput += " "+GetTimeStamp(date());	
+		sOutput += ", "+szVoucherCode+", "+(nPrice.tofloat()/100)*-1+", "+tClerk.NAME+"\n";
+		WriteLine(sOutput,myfile);	
+		myfile.flush();
+		myfile.close();
+}
+
+/**************************************************************************
+Writing a string to a file
+*************************************************************************/ 
 function WriteLine(szLine,fileOut)
 {
     for(local nCount = 0; nCount < szLine.len(); nCount++)
@@ -664,16 +705,18 @@ function WriteLine(szLine,fileOut)
     }
 }
 
-//function for getting the time from a time stamp
+/**************************************************************************
+Getting the time from a time stamp
+*************************************************************************/
 function GetTimeStamp(tNow)
 {
 	local sTimeStamp = "" + (tNow.hour < 10 ? "0"+tNow.hour : tNow.hour)+":"+(tNow.min < 10 ? "0"+tNow.min : tNow.min)+":"+(tNow.sec < 10 ? "0"+tNow.sec : tNow.sec);
 	return sTimeStamp
 }
 
-
-
-//prompt is entered amount ok
+/**************************************************************************
+Prompt is entered amount ok
+*************************************************************************/
 function DialogAmountOk(szTitle = null , nHalo = 0)
 {
 	local nPrice = DialogVoucherValue(szTitle,nHalo);
@@ -699,4 +742,3 @@ function DialogAmountOk(szTitle = null , nHalo = 0)
 		return nPrice;
 	}	
 }
-// ***###^^^ END---------------------------------------------------------------

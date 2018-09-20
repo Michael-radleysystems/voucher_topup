@@ -1,0 +1,19 @@
+local handleMissing = {_get = function(index){ return "LANGID:"+index;}}
+
+local tLanguageTable = {
+	// PGM 3 ETAL - Print Options Text
+	[0]  = "TOW Voucher - Topup",						// Tow Voucher - Topup	
+	[1]  = "Voucher Topup by Received Key",				// Voucher Topup by Received Key
+	[2]  = "Values must be Multiple of ",				// Values must be Multiple of 
+	[3]  = "Number of Drawers to Show 1~8",				// Number of Drawers to Show 1~8
+	[4]  = "Version Info",								// Version Info
+	
+	[5]  = "ENTER VOUCHER CODE"							// ENTER VOUCHER CODE
+}
+
+tLanguageTable.setdelegate(handleMissing);
+
+function ReturnLanguageFile()
+{
+	return tLanguageTable;
+}
