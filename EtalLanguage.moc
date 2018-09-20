@@ -5,10 +5,15 @@ local tLanguageTable = {
 	[0]  = "TOW Voucher - Topup",						// Tow Voucher - Topup	
 	[1]  = "Voucher Topup by Received Key",				// Voucher Topup by Received Key
 	[2]  = "Values must be Multiple of ",				// Values must be Multiple of 
-	[3]  = "Number of Drawers to Show 1~8",				// Number of Drawers to Show 1~8
+	[3]  = "Start Drawer to Show 1~8",					// Number of Start Drawer to Show 1~8
 	[4]  = "Version Info",								// Version Info
 	
-	[5]  = "ENTER VOUCHER CODE"							// ENTER VOUCHER CODE
+	[5]  = "ENTER VOUCHER CODE",						// ENTER VOUCHER CODE
+	[6]  = "End Drawer to Show 1~8",					// Number of End Drawer to Show 1~8
+	[7]  = "Use Cents in Voucher Top Up ?",				// Are we using cents in this setup
+	[8]  = "Check the amount after it was entered ?",	// Prompt to check the amount that was entered
+	[9]  = "Output a csv ?",							// Save Voucher Top ups to CSV
+	[10] = "Path and extention for csv ?"				// Reletive path to CSV file location.
 }
 
 tLanguageTable.setdelegate(handleMissing);

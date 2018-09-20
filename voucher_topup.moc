@@ -539,12 +539,12 @@ function OnEnterPGMMenu(nSub)
 			ICR_AdvertiseProgramSetting(tLanguage[2] ,"nVoucherModulo");
 			
 			// ***###^^^ START---------------------------------------------------------------
-			ICR_AdvertiseProgramSetting("Start Drawer to Show 1~8","nDrawerStart");
-			ICR_AdvertiseProgramSetting("End Drawer to Show 1~8","nDrawerLimit");
-			ICR_AdvertiseProgramSetting("Use Cents in Voucher Top Up ?","bUseCent");
-			ICR_AdvertiseProgramSetting("Check the amount after it was entered ?","bCheckAmountOK");
-			ICR_AdvertiseProgramSetting("Output a csv ?","bPrintCSV");
-			ICR_AdvertiseProgramSetting("Path and extention for csv ?","sCSVfile");
+			ICR_AdvertiseProgramSetting(tLanguage[3],"nDrawerStart");
+			ICR_AdvertiseProgramSetting(tLanguage[6],"nDrawerLimit");
+			ICR_AdvertiseProgramSetting(tLanguage[7],"bUseCent");
+			ICR_AdvertiseProgramSetting(tLanguage[8],"bCheckAmountOK");
+			ICR_AdvertiseProgramSetting(tLanguage[9],"bPrintCSV");
+			ICR_AdvertiseProgramSetting(tLanguage[10],"sCSVfile");
 			// ***###^^^ END---------------------------------------------------------------
 			
             ICR_AdvertiseProgramSetting(tLanguage[4], "SCRIPTVERINF");
