@@ -7,6 +7,7 @@ local szScriptVersion = "v1.15";
 
 dofile("etal\\lib\\keys.moc");
 dofile("etal\\lib\\strings.moc");
+dofile("etal\\lib\\dates.moc")
 
 enum VoucherTypes {GIFTCARD=1, DISCOUNT=2, FREEGIFT=3};   // NB. free gift is not implemented as yet, future use sortafing
 
@@ -269,6 +270,7 @@ function TopupVoucherFromRAcc(nRecord)
 	if(g_tLastButton.ID == 0)g_tLastButton.ID <- ICR_GetGlobalUserData("ID");
 	ICR_Voucher_Used(szVoucherCode ,nPrice,g_tLastButton.ID);
 	ICR_JournalLine(szVoucherCode, 0, 1, 53, g_nVoucherCodeKey, 0);
+	if(g_bPrintCSV) printVoucherCSV(szVoucherCode, tSaleHeader);
 	return;
 }
 
@@ -681,7 +683,7 @@ function ReceiptPrinterCheck()
 Print voucher top Up CSV
 *************************************************************************/
 
-function printVoucherCSV(szPrintVoucherCode)
+function printVoucherCSV(szVoucherCode, tSaleHeader);
 {
 	local tClerk = ICR_GetPGMData(5,tSaleHeader.CLERK);
 		local myfile = file(g_sCSVfile,"a");
